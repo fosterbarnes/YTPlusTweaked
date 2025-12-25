@@ -20,7 +20,8 @@ ENABLE_YTWEAKS=true
 ENABLE_YTICONS=false
 ENABLE_YOUGROUPSETTINGS=true
 ENABLE_GONERINO=false
-TWEAK_VERSION="5.2b4"
+TWEAK_VERSION=""
+TWEAK_VERSION_PROVIDED=false
 DISPLAY_NAME="YouTube"
 BUNDLE_ID="com.google.ios.youtube"
 IPA_SOURCE=""
@@ -55,7 +56,7 @@ IPAs Source:
 
 Optional Arguments:
     --deb                        Use pre-built .deb files from deb/ folder. Otherwise, build from source.
-    --tweak-version <version>    Version of YTLite tweak (default: 5.2b4)
+    --tweak-version <version>    Version of YTLite tweak (default: auto-detect latest)
     --display-name <name>        App display name (default: YouTube)
     --bundle-id <id>             Bundle ID (default: com.google.ios.youtube)
 
@@ -114,6 +115,7 @@ parse_args() {
                 ;;
             --tweak-version)
                 TWEAK_VERSION="$2"
+                TWEAK_VERSION_PROVIDED=true
                 shift 2
                 ;;
             --display-name)
@@ -288,6 +290,61 @@ setup_ipa() {
     fi
     
     print_success "IPA ready: $(basename "$BUILD_DIR/youtube.ipa")"
+}
+
+# Get latest YTLite version from GitHub
+get_latest_version() {
+    if [[ "$TWEAK_VERSION_PROVIDED" == "true" ]]; then
+        print_info "Using provided version: $TWEAK_VERSION"
+        return
+    fi
+    
+    print_info "Fetching latest YTLite version from GitHub..."
+    
+    # Try different methods to parse JSON response
+    local api_response=""
+    local latest_tag=""
+    
+    # Try to get the latest release tag from GitHub API
+    if [[ -n "$GITHUB_TOKEN" ]]; then
+        api_response=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/dayanch96/YTLite/releases/latest")
+    else
+        api_response=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/dayanch96/YTLite/releases/latest")
+    fi
+    
+    # Check if we got a valid response
+    if [[ -z "$api_response" ]] || [[ "$api_response" == *"Not Found"* ]] || [[ "$api_response" == *"rate limit"* ]]; then
+        print_warning "Failed to fetch latest version from GitHub API"
+        print_warning "Falling back to default version: 5.2b4"
+        TWEAK_VERSION="5.2b4"
+        return
+    fi
+    
+    # Try to parse with jq if available
+    if command -v jq &> /dev/null; then
+        latest_tag=$(echo "$api_response" | jq -r '.tag_name // empty')
+    # Try with Python if available
+    elif command -v python3 &> /dev/null; then
+        latest_tag=$(echo "$api_response" | python3 -c "import sys, json; print(json.load(sys.stdin).get('tag_name', ''))" 2>/dev/null)
+    # Fall back to grep/sed parsing
+    else
+        latest_tag=$(echo "$api_response" | grep -o '"tag_name": "[^"]*' | head -n 1 | sed 's/"tag_name": "//')
+    fi
+    
+    if [[ -z "$latest_tag" ]] || [[ "$latest_tag" == "null" ]]; then
+        print_warning "Failed to parse version from GitHub API response"
+        print_warning "Falling back to default version: 5.2b4"
+        TWEAK_VERSION="5.2b4"
+        return
+    fi
+    
+    # Remove 'v' prefix if present (e.g., v5.2b4 -> 5.2b4)
+    VERSION="${latest_tag#v}"
+    TWEAK_VERSION="$VERSION"
+    print_success "Latest version found: $TWEAK_VERSION (tag: $latest_tag)"
 }
 
 # Download YouTube Plus
@@ -754,6 +811,7 @@ main() {
     
     setup_workspace
     setup_ipa
+    get_latest_version
     download_ytplus
     clone_safari_extension
     clone_youtube_header
